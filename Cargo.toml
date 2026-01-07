@@ -1,0 +1,12 @@
+[package]
+name = "ocr_capi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ocr-rs = "2.0.2"
+libc = "0.2"
+image = "0.25"
