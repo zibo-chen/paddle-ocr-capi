@@ -56,10 +56,22 @@ jobs:
         continue-on-error: true
       
       - name: Build
-        run: cargo build --verbose
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cargo build --release --verbose
+          else
+            cargo build --verbose
+          fi
+        shell: bash
       
       - name: Run tests
-        run: cargo test --verbose
+        run: |
+          if [ "$RUNNER_OS" == "Windows" ]; then
+            cargo test --release --verbose
+          else
+            cargo test --verbose
+          fi
+        shell: bash
 
   test-cross-compile:
     name: Test cross compilation
