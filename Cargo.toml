@@ -16,6 +16,6 @@ cuda = ["ocr-rs/cuda"]
 coreml = ["ocr-rs/coreml"]
 
 [dependencies]
-ocr-rs = "2.0.3"
+ocr-rs = "2.0.4"
 libc = "0.2"
 image = "0.25"
