@@ -10,6 +10,11 @@ linker = "arm-linux-gnueabihf-gcc"
 linker = "gcc"
 rustflags = ["-C", "link-arg=-m32"]
 
+# Android targets (linker set via CARGO_TARGET_*_LINKER env var in CI)
+# The NDK clang is used as the linker, configured in CI workflow.
+
+# iOS targets (uses default Apple toolchain, no special linker needed)
+
 # Environment variables for cross-compilation
 [env]
 # For aarch64

@@ -7,7 +7,7 @@
 - **三层 API 设计**：从底层到高层，满足不同需求
 - **零重复初始化**：模型只需加载一次，可重复使用
 - **高性能**：原生 Rust 实现，支持多线程和 GPU 加速
-- **跨平台**：支持 macOS、Linux、Windows
+- **跨平台**：支持 macOS、Linux、Windows、iOS、Android
 
 ## API 层级
 
@@ -116,6 +116,64 @@ cargo build --release
 - macOS: `libocr_capi.dylib`
 - Linux: `libocr_capi.so`
 - Windows: `ocr_capi.dll`
+- iOS: `libocr_capi.a` (静态库) / `OcrCapi.xcframework` (XCFramework)
+- Android: `libocr_capi.so` (位于对应 ABI 目录下)
+
+### iOS 交叉编译
+
+```bash
+# 设备 (arm64)
+cargo build --release --target aarch64-apple-ios
+
+# 模拟器 (arm64)
+cargo build --release --target aarch64-apple-ios-sim
+
+# 模拟器 (x86_64)
+cargo build --release --target x86_64-apple-ios
+```
+
+如需支持 Metal GPU 加速：
+```bash
+cargo build --release --target aarch64-apple-ios --features metal
+```
+
+CI 会自动打包 XCFramework，可以直接拖入 Xcode 项目使用。
+
+### Android 交叉编译
+
+需要 Android NDK，设置 `ANDROID_NDK_ROOT` 环境变量后：
+
+```bash
+# arm64-v8a
+cargo build --release --target aarch64-linux-android
+
+# armeabi-v7a
+cargo build --release --target armv7-linux-androideabi
+
+# x86_64
+cargo build --release --target x86_64-linux-android
+
+# x86
+cargo build --release --target i686-linux-android
+```
+
+生成的 `.so` 文件放入 Android 项目的 `jniLibs/<abi>/` 目录中使用。
+
+### GPU 加速特性
+
+```bash
+# iOS/macOS Metal 加速
+cargo build --release --features metal
+
+# iOS/macOS CoreML 加速
+cargo build --release --features coreml
+
+# Android/Linux OpenCL 加速
+cargo build --release --features opencl
+
+# Vulkan 加速 (跨平台)
+cargo build --release --features vulkan
+```
 
 ### 编译示例
 

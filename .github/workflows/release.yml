@@ -176,8 +176,317 @@ jobs:
           name: ocr_capi-${{ matrix.target }}
           path: artifacts/*
 
+  build-ios:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-ios
+            platform: ios-device
+          - target: aarch64-apple-ios-sim
+            platform: ios-simulator-arm64
+          - target: x86_64-apple-ios
+            platform: ios-simulator-x64
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Set iOS deployment target
+        run: echo "IPHONEOS_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
+      
+      - name: Build ocr_capi for iOS
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts
+          # Copy both dynamic and static libraries
+          if [ -f "target/${{ matrix.target }}/release/libocr_capi.dylib" ]; then
+            cp target/${{ matrix.target }}/release/libocr_capi.dylib artifacts/libocr_capi-${{ matrix.platform }}.dylib
+          fi
+          if [ -f "target/${{ matrix.target }}/release/libocr_capi.a" ]; then
+            cp target/${{ matrix.target }}/release/libocr_capi.a artifacts/libocr_capi-${{ matrix.platform }}.a
+          fi
+          cp include/ocr_capi.h artifacts/
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr_capi-${{ matrix.target }}
+          path: artifacts/*
+
+  package-ios-xcframework:
+    needs: build-ios
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all iOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ios-artifacts
+      
+      - name: Create XCFramework
+        run: |
+          set -euo pipefail
+          
+          FRAMEWORK_NAME="OcrCapi"
+          
+          # --- Create framework structure for device (arm64) ---
+          DEVICE_FW="frameworks/ios-device/${FRAMEWORK_NAME}.framework"
+          mkdir -p "${DEVICE_FW}/Headers"
+          cp ios-artifacts/ocr_capi-aarch64-apple-ios/libocr_capi-ios-device.a "${DEVICE_FW}/${FRAMEWORK_NAME}"
+          cp include/ocr_capi.h "${DEVICE_FW}/Headers/"
+
+          mkdir -p "${DEVICE_FW}/Modules"
+          cat > "${DEVICE_FW}/Modules/module.modulemap" << 'MODULEMAP'
+          framework module OcrCapi {
+            header "ocr_capi.h"
+            export *
+          }
+          MODULEMAP
+
+          cat > "${DEVICE_FW}/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>${FRAMEWORK_NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.ocr-rs.${FRAMEWORK_NAME}</string>
+            <key>CFBundleName</key>
+            <string>${FRAMEWORK_NAME}</string>
+            <key>CFBundleVersion</key>
+            <string>1.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundlePackageType</key>
+            <string>FMWK</string>
+            <key>MinimumOSVersion</key>
+            <string>13.0</string>
+            <key>CFBundleSupportedPlatforms</key>
+            <array>
+              <string>iPhoneOS</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+          # --- Create fat library for simulator (arm64 + x86_64) ---
+          SIMULATOR_FW="frameworks/ios-simulator/${FRAMEWORK_NAME}.framework"
+          mkdir -p "${SIMULATOR_FW}/Headers"
+          
+          lipo -create \
+            ios-artifacts/ocr_capi-aarch64-apple-ios-sim/libocr_capi-ios-simulator-arm64.a \
+            ios-artifacts/ocr_capi-x86_64-apple-ios/libocr_capi-ios-simulator-x64.a \
+            -output "${SIMULATOR_FW}/${FRAMEWORK_NAME}"
+          
+          cp include/ocr_capi.h "${SIMULATOR_FW}/Headers/"
+
+          mkdir -p "${SIMULATOR_FW}/Modules"
+          cat > "${SIMULATOR_FW}/Modules/module.modulemap" << 'MODULEMAP'
+          framework module OcrCapi {
+            header "ocr_capi.h"
+            export *
+          }
+          MODULEMAP
+
+          cat > "${SIMULATOR_FW}/Info.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>${FRAMEWORK_NAME}</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.ocr-rs.${FRAMEWORK_NAME}</string>
+            <key>CFBundleName</key>
+            <string>${FRAMEWORK_NAME}</string>
+            <key>CFBundleVersion</key>
+            <string>1.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0</string>
+            <key>CFBundlePackageType</key>
+            <string>FMWK</string>
+            <key>MinimumOSVersion</key>
+            <string>13.0</string>
+            <key>CFBundleSupportedPlatforms</key>
+            <array>
+              <string>iPhoneSimulator</string>
+            </array>
+          </dict>
+          </plist>
+          PLIST
+
+          # --- Create XCFramework ---
+          xcodebuild -create-xcframework \
+            -framework "${DEVICE_FW}" \
+            -framework "${SIMULATOR_FW}" \
+            -output "xcframework/${FRAMEWORK_NAME}.xcframework"
+          
+          echo "XCFramework created successfully"
+          ls -la xcframework/
+      
+      - name: Zip XCFramework
+        run: |
+          cd xcframework
+          zip -r ../OcrCapi.xcframework.zip OcrCapi.xcframework
+      
+      - name: Upload XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr_capi-ios-xcframework
+          path: OcrCapi.xcframework.zip
+
+  build-android:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            abi: arm64-v8a
+            ndk_triple: aarch64-linux-android
+          - target: armv7-linux-androideabi
+            abi: armeabi-v7a
+            ndk_triple: armv7a-linux-androideabi
+          - target: x86_64-linux-android
+            abi: x86_64
+            ndk_triple: x86_64-linux-android
+          - target: i686-linux-android
+            abi: x86
+            ndk_triple: i686-linux-android
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          add-to-path: true
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Set Android environment
+        run: |
+          NDK_ROOT="${{ steps.setup-ndk.outputs.ndk-path }}"
+          TOOLCHAIN="${NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          API_LEVEL=21
+          
+          # Set NDK root for cmake (used by ocr-rs build.rs)
+          echo "ANDROID_NDK_ROOT=${NDK_ROOT}" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=${NDK_ROOT}" >> $GITHUB_ENV
+          
+          # Normalize target name for env var (replace - with _)
+          TARGET_UPPER=$(echo "${{ matrix.target }}" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
+          TARGET_UNDER=$(echo "${{ matrix.target }}" | tr '-' '_')
+          
+          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${TOOLCHAIN}/bin/${{ matrix.ndk_triple }}${API_LEVEL}-clang" >> $GITHUB_ENV
+          echo "CC_${TARGET_UNDER}=${TOOLCHAIN}/bin/${{ matrix.ndk_triple }}${API_LEVEL}-clang" >> $GITHUB_ENV
+          echo "CXX_${TARGET_UNDER}=${TOOLCHAIN}/bin/${{ matrix.ndk_triple }}${API_LEVEL}-clang++" >> $GITHUB_ENV
+          echo "AR_${TARGET_UNDER}=${TOOLCHAIN}/bin/llvm-ar" >> $GITHUB_ENV
+      
+      - name: Build ocr_capi for Android
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Prepare artifacts
+        run: |
+          mkdir -p artifacts/jniLibs/${{ matrix.abi }}
+          cp target/${{ matrix.target }}/release/libocr_capi.so artifacts/jniLibs/${{ matrix.abi }}/libocr_capi.so
+          cp include/ocr_capi.h artifacts/
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr_capi-${{ matrix.target }}
+          path: artifacts/*
+
+  package-android:
+    needs: build-android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all Android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: android-artifacts
+      
+      - name: Package Android bundle
+        run: |
+          set -euo pipefail
+          
+          mkdir -p android-bundle/jniLibs
+          mkdir -p android-bundle/include
+          
+          # Copy .so files into standard Android jniLibs structure
+          for target_dir in android-artifacts/ocr_capi-*-linux-android*; do
+            if [ -d "${target_dir}/jniLibs" ]; then
+              cp -r ${target_dir}/jniLibs/* android-bundle/jniLibs/
+            fi
+          done
+          
+          # Copy header
+          cp include/ocr_capi.h android-bundle/include/
+          
+          echo "Android bundle structure:"
+          find android-bundle -type f
+          
+          cd android-bundle
+          zip -r ../ocr_capi-android.zip .
+      
+      - name: Upload Android bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr_capi-android-bundle
+          path: ocr_capi-android.zip
+
   create-release:
-    needs: [build-windows, build-linux, build-macos]
+    needs: [build-windows, build-linux, build-macos, package-ios-xcframework, package-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -198,5 +507,3 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
