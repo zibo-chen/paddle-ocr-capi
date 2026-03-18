@@ -261,6 +261,102 @@ extern "C"
     void ocr_rec_result_free(RecResult *result);
 
     /* ============================================================================
+     * 底层 API - 方向分类模型
+     * ============================================================================ */
+
+    /**
+     * 方向分类预处理模式
+     */
+    typedef enum
+    {
+        OCR_ORI_MODE_DOC = 0,     /**< 文档方向 (PP-LCNet_x1_0_doc_ori, 4类: 0°/90°/180°/270°) */
+        OCR_ORI_MODE_TEXTLINE = 1 /**< 文本行方向 (PP-LCNet_x1_0_textline_ori, 2类: 0°/180°) */
+    } OcrOriPreprocessMode;
+
+    /**
+     * 方向分类结果
+     */
+    typedef struct
+    {
+        size_t class_idx; /**< 预测的类别索引 */
+        int angle;        /**< 预测的角度 (0, 90, 180, 270)，-1 表示失败 */
+        float confidence; /**< 置信度 (0.0 - 1.0) */
+    } OriResult;
+
+    /** 方向分类模型句柄 (不透明类型) */
+    typedef struct OriModelHandle OriModelHandle;
+
+    /**
+     * 创建方向分类模型
+     *
+     * @param model_path 模型文件路径 (.mnn 格式)
+     * @param config 配置指针，传 NULL 使用默认配置
+     * @return 成功返回模型句柄，失败返回 NULL
+     *
+     * @note 模型句柄使用完毕后需调用 ocr_ori_model_destroy 销毁
+     *
+     * @code
+     * OriModelHandle* ori = ocr_ori_model_create("doc_ori.mnn", NULL);
+     * if (ori == NULL) {
+     *     char* err = ocr_get_last_error();
+     *     printf("Error: %s\n", err);
+     *     ocr_free_string(err);
+     * }
+     * @endcode
+     */
+    OriModelHandle *ocr_ori_model_create(const char *model_path, const OcrConfig *config);
+
+    /**
+     * 创建方向分类模型 (指定预处理模式)
+     *
+     * @param model_path 模型文件路径
+     * @param mode 预处理模式 (Doc 或 Textline)
+     * @param config 配置指针，传 NULL 使用默认配置
+     * @return 成功返回模型句柄，失败返回 NULL
+     */
+    OriModelHandle *ocr_ori_model_create_with_mode(const char *model_path,
+                                                   OcrOriPreprocessMode mode,
+                                                   const OcrConfig *config);
+
+    /**
+     * 销毁方向分类模型
+     * @param handle 模型句柄
+     */
+    void ocr_ori_model_destroy(OriModelHandle *handle);
+
+    /**
+     * 使用方向分类模型对 RGB 图像进行分类
+     *
+     * @param handle 模型句柄
+     * @param rgb_data RGB 图像数据
+     * @param width 图像宽度
+     * @param height 图像高度
+     * @return 分类结果，angle=-1 表示失败
+     *
+     * @code
+     * OriResult result = ocr_ori_model_classify(ori, rgb_data, width, height);
+     * if (result.angle >= 0) {
+     *     printf("Angle: %d°, Confidence: %.2f%%\n",
+     *            result.angle, result.confidence * 100);
+     * }
+     * @endcode
+     */
+    OriResult ocr_ori_model_classify(OriModelHandle *handle,
+                                     const unsigned char *rgb_data,
+                                     unsigned int width,
+                                     unsigned int height);
+
+    /**
+     * 使用方向分类模型对图片文件进行分类
+     *
+     * @param handle 模型句柄
+     * @param image_path 图片文件路径
+     * @return 分类结果，angle=-1 表示失败
+     */
+    OriResult ocr_ori_model_classify_file(OriModelHandle *handle,
+                                          const char *image_path);
+
+    /* ============================================================================
      * 普通 API - OCR 引擎 (推荐使用)
      * ============================================================================ */
 
@@ -299,6 +395,35 @@ extern "C"
                                        const char *rec_model_path,
                                        const char *charset_path,
                                        const OcrConfig *config);
+
+    /**
+     * 创建带方向矫正的 OCR 引擎
+     *
+     * 当输入图片可能是旋转的（如 90°/180°/270°），引擎会先进行方向检测，
+     * 自动将图片旋转到正确方向后再进行文字检测和识别。
+     *
+     * @param det_model_path 检测模型文件路径
+     * @param rec_model_path 识别模型文件路径
+     * @param charset_path 字符集文件路径
+     * @param ori_model_path 方向分类模型文件路径
+     * @param config 配置指针，传 NULL 使用默认配置
+     * @return 成功返回引擎句柄，失败返回 NULL
+     *
+     * @note 引擎句柄使用完毕后需调用 ocr_engine_destroy 销毁
+     *
+     * @code
+     * OcrEngineHandle* engine = ocr_engine_create_with_ori(
+     *     "det.mnn", "rec.mnn", "keys.txt", "doc_ori.mnn", NULL);
+     *
+     * // 即使图片是旋转的，也能正确识别
+     * OcrResultList result = ocr_engine_recognize_file(engine, "rotated.jpg");
+     * @endcode
+     */
+    OcrEngineHandle *ocr_engine_create_with_ori(const char *det_model_path,
+                                                const char *rec_model_path,
+                                                const char *charset_path,
+                                                const char *ori_model_path,
+                                                const OcrConfig *config);
 
     /**
      * 销毁 OCR 引擎

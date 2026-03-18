@@ -9,7 +9,7 @@ use image::{DynamicImage, RgbImage};
 use libc::{c_char, c_float, c_int, c_uchar, c_uint, size_t};
 use ocr_rs::{
     Backend, DetModel, DetOptions, InferenceConfig, OcrEngine, OcrEngineConfig, OcrResult_,
-    PrecisionMode, RecModel, RecOptions,
+    OriModel, OriOptions, OriPreprocessMode, PrecisionMode, RecModel, RecOptions,
 };
 use std::ffi::{CStr, CString};
 use std::ptr;
@@ -564,6 +564,266 @@ pub extern "C" fn ocr_rec_result_free(result: *mut RecResult) {
 }
 
 // ============================================================================
+// 底层 API - 方向分类模型
+// ============================================================================
+
+/// 方向分类预处理模式
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub enum OcrOriPreprocessMode {
+    /// 文档方向 (PP-LCNet_x1_0_doc_ori)
+    Doc = 0,
+    /// 文本行方向 (PP-LCNet_x1_0_textline_ori)
+    Textline = 1,
+}
+
+impl From<OcrOriPreprocessMode> for OriPreprocessMode {
+    fn from(mode: OcrOriPreprocessMode) -> Self {
+        match mode {
+            OcrOriPreprocessMode::Doc => OriPreprocessMode::Doc,
+            OcrOriPreprocessMode::Textline => OriPreprocessMode::Textline,
+        }
+    }
+}
+
+/// 方向分类结果
+#[repr(C)]
+pub struct OriResult {
+    /// 预测的类别索引
+    pub class_idx: size_t,
+    /// 预测的角度 (0, 90, 180, 270)
+    pub angle: c_int,
+    /// 置信度 (0.0 - 1.0)
+    pub confidence: c_float,
+}
+
+/// 方向分类模型句柄
+pub struct OriModelHandle {
+    model: OriModel,
+}
+
+/// 创建方向分类模型
+///
+/// # 参数
+/// - `model_path`: 模型文件路径 (.mnn 格式)
+/// - `config`: 可选配置，传 NULL 使用默认配置
+///
+/// # 返回
+/// 成功返回模型句柄，失败返回 NULL
+#[no_mangle]
+pub extern "C" fn ocr_ori_model_create(
+    model_path: *const c_char,
+    config: *const OcrConfig,
+) -> *mut OriModelHandle {
+    if model_path.is_null() {
+        set_last_error("model_path is null".to_string());
+        return ptr::null_mut();
+    }
+
+    let path = match unsafe { CStr::from_ptr(model_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("Invalid UTF-8 in model_path: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let inference_config = if config.is_null() {
+        None
+    } else {
+        let cfg = unsafe { &*config };
+        Some(InferenceConfig {
+            thread_count: cfg.thread_count,
+            precision_mode: cfg.precision.into(),
+            backend: cfg.backend.into(),
+            ..Default::default()
+        })
+    };
+
+    match OriModel::from_file(path, inference_config) {
+        Ok(model) => Box::into_raw(Box::new(OriModelHandle { model })),
+        Err(e) => {
+            set_last_error(format!("Failed to load ori model: {}", e));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// 创建方向分类模型 (指定预处理模式)
+///
+/// # 参数
+/// - `model_path`: 模型文件路径
+/// - `mode`: 预处理模式 (Doc 或 Textline)
+/// - `config`: 可选配置
+///
+/// # 返回
+/// 成功返回模型句柄，失败返回 NULL
+#[no_mangle]
+pub extern "C" fn ocr_ori_model_create_with_mode(
+    model_path: *const c_char,
+    mode: OcrOriPreprocessMode,
+    config: *const OcrConfig,
+) -> *mut OriModelHandle {
+    if model_path.is_null() {
+        set_last_error("model_path is null".to_string());
+        return ptr::null_mut();
+    }
+
+    let path = match unsafe { CStr::from_ptr(model_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("Invalid UTF-8 in model_path: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let inference_config = if config.is_null() {
+        None
+    } else {
+        let cfg = unsafe { &*config };
+        Some(InferenceConfig {
+            thread_count: cfg.thread_count,
+            precision_mode: cfg.precision.into(),
+            backend: cfg.backend.into(),
+            ..Default::default()
+        })
+    };
+
+    let options = match mode {
+        OcrOriPreprocessMode::Doc => OriOptions::doc(),
+        OcrOriPreprocessMode::Textline => OriOptions::textline(),
+    };
+
+    match OriModel::from_file(path, inference_config) {
+        Ok(model) => {
+            let model = model.with_options(options);
+            Box::into_raw(Box::new(OriModelHandle { model }))
+        }
+        Err(e) => {
+            set_last_error(format!("Failed to load ori model: {}", e));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// 销毁方向分类模型
+#[no_mangle]
+pub extern "C" fn ocr_ori_model_destroy(handle: *mut OriModelHandle) {
+    if !handle.is_null() {
+        unsafe {
+            drop(Box::from_raw(handle));
+        }
+    }
+}
+
+/// 使用方向分类模型对 RGB 图像进行分类
+///
+/// # 参数
+/// - `handle`: 模型句柄
+/// - `rgb_data`: RGB 图像数据
+/// - `width`: 图像宽度
+/// - `height`: 图像高度
+///
+/// # 返回
+/// 分类结果，angle=-1 表示失败
+#[no_mangle]
+pub extern "C" fn ocr_ori_model_classify(
+    handle: *mut OriModelHandle,
+    rgb_data: *const c_uchar,
+    width: c_uint,
+    height: c_uint,
+) -> OriResult {
+    let empty_result = OriResult {
+        class_idx: 0,
+        angle: -1,
+        confidence: 0.0,
+    };
+
+    if handle.is_null() || rgb_data.is_null() {
+        set_last_error("Null pointer".to_string());
+        return empty_result;
+    }
+
+    let model = unsafe { &(*handle).model };
+    let data_len = (width * height * 3) as usize;
+    let data = unsafe { slice::from_raw_parts(rgb_data, data_len) };
+
+    let image = match RgbImage::from_raw(width, height, data.to_vec()) {
+        Some(img) => DynamicImage::ImageRgb8(img),
+        None => {
+            set_last_error("Failed to create image from RGB data".to_string());
+            return empty_result;
+        }
+    };
+
+    match model.classify(&image) {
+        Ok(result) => OriResult {
+            class_idx: result.class_idx,
+            angle: result.angle,
+            confidence: result.confidence,
+        },
+        Err(e) => {
+            set_last_error(format!("Orientation classification failed: {}", e));
+            empty_result
+        }
+    }
+}
+
+/// 使用方向分类模型对图片文件进行分类
+///
+/// # 参数
+/// - `handle`: 模型句柄
+/// - `image_path`: 图片文件路径
+///
+/// # 返回
+/// 分类结果，angle=-1 表示失败
+#[no_mangle]
+pub extern "C" fn ocr_ori_model_classify_file(
+    handle: *mut OriModelHandle,
+    image_path: *const c_char,
+) -> OriResult {
+    let empty_result = OriResult {
+        class_idx: 0,
+        angle: -1,
+        confidence: 0.0,
+    };
+
+    if handle.is_null() || image_path.is_null() {
+        set_last_error("Null pointer".to_string());
+        return empty_result;
+    }
+
+    let path = match unsafe { CStr::from_ptr(image_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("Invalid UTF-8 in image_path: {}", e));
+            return empty_result;
+        }
+    };
+
+    let image = match image::open(path) {
+        Ok(img) => img,
+        Err(e) => {
+            set_last_error(format!("Failed to load image: {}", e));
+            return empty_result;
+        }
+    };
+
+    let model = unsafe { &(*handle).model };
+    match model.classify(&image) {
+        Ok(result) => OriResult {
+            class_idx: result.class_idx,
+            angle: result.angle,
+            confidence: result.confidence,
+        },
+        Err(e) => {
+            set_last_error(format!("Orientation classification failed: {}", e));
+            empty_result
+        }
+    }
+}
+
+// ============================================================================
 // 普通 API - OCR 引擎 (接收 RGB 数据)
 // ============================================================================
 
@@ -646,6 +906,99 @@ pub extern "C" fn ocr_engine_create(
         Ok(engine) => Box::into_raw(Box::new(OcrEngineHandle { engine })),
         Err(e) => {
             set_last_error(format!("Failed to create OCR engine: {}", e));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// 创建带方向矫正的 OCR 引擎
+///
+/// # 参数
+/// - `det_model_path`: 检测模型文件路径
+/// - `rec_model_path`: 识别模型文件路径
+/// - `charset_path`: 字符集文件路径
+/// - `ori_model_path`: 方向分类模型文件路径
+/// - `config`: 可选配置，传 NULL 使用默认配置
+///
+/// # 返回
+/// 成功返回引擎句柄，失败返回 NULL
+#[no_mangle]
+pub extern "C" fn ocr_engine_create_with_ori(
+    det_model_path: *const c_char,
+    rec_model_path: *const c_char,
+    charset_path: *const c_char,
+    ori_model_path: *const c_char,
+    config: *const OcrConfig,
+) -> *mut OcrEngineHandle {
+    if det_model_path.is_null()
+        || rec_model_path.is_null()
+        || charset_path.is_null()
+        || ori_model_path.is_null()
+    {
+        set_last_error("One or more paths are null".to_string());
+        return ptr::null_mut();
+    }
+
+    let det_path = match unsafe { CStr::from_ptr(det_model_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("Invalid UTF-8 in det_model_path: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let rec_path = match unsafe { CStr::from_ptr(rec_model_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("Invalid UTF-8 in rec_model_path: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let charset = match unsafe { CStr::from_ptr(charset_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("Invalid UTF-8 in charset_path: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let ori_path = match unsafe { CStr::from_ptr(ori_model_path) }.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            set_last_error(format!("Invalid UTF-8 in ori_model_path: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let engine_config = if config.is_null() {
+        None
+    } else {
+        let cfg = unsafe { &*config };
+        Some(
+            OcrEngineConfig::new()
+                .with_backend(cfg.backend.into())
+                .with_threads(cfg.thread_count)
+                .with_precision(cfg.precision.into())
+                .with_det_options(DetOptions {
+                    max_side_len: cfg.det_max_side_len,
+                    box_threshold: cfg.det_box_threshold,
+                    score_threshold: cfg.det_score_threshold,
+                    ..Default::default()
+                })
+                .with_rec_options(RecOptions {
+                    min_score: cfg.rec_min_score,
+                    ..Default::default()
+                })
+                .with_parallel(cfg.enable_parallel != 0)
+                .with_min_result_confidence(cfg.min_result_confidence),
+        )
+    };
+
+    match OcrEngine::new_with_ori(det_path, rec_path, charset, ori_path, engine_config) {
+        Ok(engine) => Box::into_raw(Box::new(OcrEngineHandle { engine })),
+        Err(e) => {
+            set_last_error(format!("Failed to create OCR engine with ori: {}", e));
             ptr::null_mut()
         }
     }

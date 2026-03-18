@@ -29,6 +29,14 @@ class OcrResult:
     bbox: BBox
 
 
+@dataclass
+class OrientationResult:
+    """方向分类结果"""
+    class_idx: int
+    angle: int        # 预测角度 (0, 90, 180, 270)，-1 表示失败
+    confidence: float
+
+
 class OcrBackend:
     """推理后端"""
     CPU = 0
@@ -42,6 +50,12 @@ class OcrPrecision:
     NORMAL = 0
     LOW = 1
     HIGH = 2
+
+
+class OcrOriPreprocessMode:
+    """方向分类预处理模式"""
+    DOC = 0       # 文档方向 (4类: 0°/90°/180°/270°)
+    TEXTLINE = 1  # 文本行方向 (2类: 0°/180°)
 
 
 class _OcrConfig(ctypes.Structure):
@@ -83,6 +97,15 @@ class _OcrResultList(ctypes.Structure):
     _fields_ = [
         ("items", ctypes.POINTER(_OcrResultItem)),
         ("count", ctypes.c_size_t),
+    ]
+
+
+class _OriResult(ctypes.Structure):
+    """方向分类结果 (C 结构体)"""
+    _fields_ = [
+        ("class_idx", ctypes.c_size_t),
+        ("angle", ctypes.c_int),
+        ("confidence", ctypes.c_float),
     ]
 
 
@@ -156,6 +179,7 @@ class OcrEngine:
         charset_path: str,
         config: Optional[OcrConfig] = None,
         lib_path: Optional[str] = None,
+        ori_model_path: Optional[str] = None,
     ):
         """
         初始化 OCR 引擎
@@ -166,6 +190,7 @@ class OcrEngine:
             charset_path: 字符集文件路径
             config: 配置选项，None 使用默认配置
             lib_path: 动态库路径，None 自动查找
+            ori_model_path: 方向分类模型路径，None 不启用旋转矫正
         """
         # 加载动态库
         self._lib = self._load_library(lib_path)
@@ -177,12 +202,21 @@ class OcrEngine:
             c_config = config._to_c_struct()
             config_ptr = ctypes.byref(c_config)
         
-        self._handle = self._lib.ocr_engine_create(
-            det_model_path.encode('utf-8'),
-            rec_model_path.encode('utf-8'),
-            charset_path.encode('utf-8'),
-            config_ptr,
-        )
+        if ori_model_path:
+            self._handle = self._lib.ocr_engine_create_with_ori(
+                det_model_path.encode('utf-8'),
+                rec_model_path.encode('utf-8'),
+                charset_path.encode('utf-8'),
+                ori_model_path.encode('utf-8'),
+                config_ptr,
+            )
+        else:
+            self._handle = self._lib.ocr_engine_create(
+                det_model_path.encode('utf-8'),
+                rec_model_path.encode('utf-8'),
+                charset_path.encode('utf-8'),
+                config_ptr,
+            )
         
         if not self._handle:
             error = self._get_last_error()
@@ -374,6 +408,16 @@ class OcrEngine:
         ]
         self._lib.ocr_engine_create.restype = ctypes.c_void_p
         
+        # ocr_engine_create_with_ori
+        self._lib.ocr_engine_create_with_ori.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.c_char_p,
+            ctypes.POINTER(_OcrConfig),
+        ]
+        self._lib.ocr_engine_create_with_ori.restype = ctypes.c_void_p
+        
         # ocr_engine_destroy
         self._lib.ocr_engine_destroy.argtypes = [ctypes.c_void_p]
         self._lib.ocr_engine_destroy.restype = None
@@ -418,3 +462,171 @@ class OcrEngine:
         # ocr_version
         self._lib.ocr_version.argtypes = []
         self._lib.ocr_version.restype = ctypes.c_char_p
+        
+        # ocr_ori_model_create
+        self._lib.ocr_ori_model_create.argtypes = [
+            ctypes.c_char_p,
+            ctypes.POINTER(_OcrConfig),
+        ]
+        self._lib.ocr_ori_model_create.restype = ctypes.c_void_p
+        
+        # ocr_ori_model_create_with_mode
+        self._lib.ocr_ori_model_create_with_mode.argtypes = [
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.POINTER(_OcrConfig),
+        ]
+        self._lib.ocr_ori_model_create_with_mode.restype = ctypes.c_void_p
+        
+        # ocr_ori_model_destroy
+        self._lib.ocr_ori_model_destroy.argtypes = [ctypes.c_void_p]
+        self._lib.ocr_ori_model_destroy.restype = None
+        
+        # ocr_ori_model_classify
+        self._lib.ocr_ori_model_classify.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_uint,
+            ctypes.c_uint,
+        ]
+        self._lib.ocr_ori_model_classify.restype = _OriResult
+        
+        # ocr_ori_model_classify_file
+        self._lib.ocr_ori_model_classify_file.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+        ]
+        self._lib.ocr_ori_model_classify_file.restype = _OriResult
+
+
+class OcrOriModel:
+    """方向分类模型"""
+    
+    def __init__(
+        self,
+        model_path: str,
+        mode: Optional[int] = None,
+        config: Optional[OcrConfig] = None,
+        lib_path: Optional[str] = None,
+    ):
+        """
+        初始化方向分类模型
+        
+        Args:
+            model_path: 模型文件路径
+            mode: 预处理模式 (OcrOriPreprocessMode.DOC 或 TEXTLINE)，None 使用默认 (Doc)
+            config: 配置选项
+            lib_path: 动态库路径
+        """
+        self._lib = OcrEngine._load_library(lib_path)
+        self._setup_functions()
+        
+        config_ptr = None
+        if config:
+            c_config = config._to_c_struct()
+            config_ptr = ctypes.byref(c_config)
+        
+        if mode is not None:
+            self._handle = self._lib.ocr_ori_model_create_with_mode(
+                model_path.encode('utf-8'),
+                mode,
+                config_ptr,
+            )
+        else:
+            self._handle = self._lib.ocr_ori_model_create(
+                model_path.encode('utf-8'),
+                config_ptr,
+            )
+        
+        if not self._handle:
+            error_ptr = self._lib.ocr_get_last_error()
+            error = ctypes.string_at(error_ptr).decode('utf-8') if error_ptr else "Unknown error"
+            if error_ptr:
+                self._lib.ocr_free_string(error_ptr)
+            raise RuntimeError(f"Failed to create orientation model: {error}")
+    
+    def __del__(self):
+        if hasattr(self, '_handle') and hasattr(self, '_lib') and self._handle:
+            self._lib.ocr_ori_model_destroy(self._handle)
+            self._handle = None
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._handle:
+            self._lib.ocr_ori_model_destroy(self._handle)
+            self._handle = None
+    
+    def classify_file(self, image_path: str) -> OrientationResult:
+        """
+        对图片文件进行方向分类
+        
+        Args:
+            image_path: 图片文件路径
+        
+        Returns:
+            方向分类结果
+        """
+        result = self._lib.ocr_ori_model_classify_file(
+            self._handle,
+            image_path.encode('utf-8'),
+        )
+        return OrientationResult(
+            class_idx=result.class_idx,
+            angle=result.angle,
+            confidence=result.confidence,
+        )
+    
+    def classify_rgb(self, rgb_data: bytes, width: int, height: int) -> OrientationResult:
+        """
+        对 RGB 图像数据进行方向分类
+        
+        Args:
+            rgb_data: RGB 图像数据
+            width: 图像宽度
+            height: 图像高度
+        
+        Returns:
+            方向分类结果
+        """
+        rgb_array = (ctypes.c_ubyte * len(rgb_data)).from_buffer_copy(rgb_data)
+        result = self._lib.ocr_ori_model_classify(
+            self._handle,
+            rgb_array,
+            width,
+            height,
+        )
+        return OrientationResult(
+            class_idx=result.class_idx,
+            angle=result.angle,
+            confidence=result.confidence,
+        )
+    
+    def _setup_functions(self):
+        """设置函数签名"""
+        self._lib.ocr_ori_model_create.argtypes = [
+            ctypes.c_char_p, ctypes.POINTER(_OcrConfig)]
+        self._lib.ocr_ori_model_create.restype = ctypes.c_void_p
+        
+        self._lib.ocr_ori_model_create_with_mode.argtypes = [
+            ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(_OcrConfig)]
+        self._lib.ocr_ori_model_create_with_mode.restype = ctypes.c_void_p
+        
+        self._lib.ocr_ori_model_destroy.argtypes = [ctypes.c_void_p]
+        self._lib.ocr_ori_model_destroy.restype = None
+        
+        self._lib.ocr_ori_model_classify.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_uint, ctypes.c_uint]
+        self._lib.ocr_ori_model_classify.restype = _OriResult
+        
+        self._lib.ocr_ori_model_classify_file.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p]
+        self._lib.ocr_ori_model_classify_file.restype = _OriResult
+        
+        self._lib.ocr_get_last_error.argtypes = []
+        self._lib.ocr_get_last_error.restype = ctypes.c_char_p
+        
+        self._lib.ocr_free_string.argtypes = [ctypes.c_char_p]
+        self._lib.ocr_free_string.restype = None

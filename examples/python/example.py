@@ -7,7 +7,7 @@ OCR Python 示例
 
 import sys
 from pathlib import Path
-from ocr_wrapper import OcrEngine, OcrConfig, OcrBackend, OcrPrecision
+from ocr_wrapper import OcrEngine, OcrConfig, OcrBackend, OcrPrecision, OcrOriModel, OcrOriPreprocessMode
 
 
 def example_simple(det_path: str, rec_path: str, charset_path: str, image_path: str):
@@ -183,29 +183,67 @@ def example_with_opencv(det_path: str, rec_path: str, charset_path: str, image_p
         print(f"结果已保存到: {output_path}")
 
 
+def example_orientation(ori_path: str, image_path: str):
+    """示例 8: 方向分类 (单独使用方向模型)"""
+    print("\n=== 示例 8: 方向分类 ===")
+    
+    with OcrOriModel(ori_path) as ori:
+        result = ori.classify_file(image_path)
+        
+        if result.angle >= 0:
+            print(f"图片方向: {result.angle}°")
+            print(f"置信度: {result.confidence * 100:.2f}%")
+            print(f"类别索引: {result.class_idx}")
+        else:
+            print("方向分类失败")
+
+
+def example_with_orientation(det_path: str, rec_path: str, charset_path: str,
+                             ori_path: str, image_path: str):
+    """示例 9: 带旋转矫正的 OCR (推荐用于可能旋转的图片)"""
+    print("\n=== 示例 9: 带旋转矫正的 OCR ===")
+    
+    with OcrEngine(det_path, rec_path, charset_path, ori_model_path=ori_path) as engine:
+        results = engine.recognize_file(image_path)
+        
+        print(f"识别结果数量: {len(results)}")
+        for i, result in enumerate(results, 1):
+            print(f"[{i}] 文本: {result.text}")
+            print(f"    置信度: {result.confidence * 100:.2f}%")
+            print(f"    位置: ({result.bbox.x}, {result.bbox.y}, "
+                  f"{result.bbox.width}, {result.bbox.height})")
+
+
 def main():
     print("OCR Python 示例")
     print(f"版本: {OcrEngine.get_version()}")
     
     if len(sys.argv) < 5:
-        print("\n用法: python example.py <det_model> <rec_model> <charset> <image> [image2 ...]")
+        print("\n用法: python example.py <det_model> <rec_model> <charset> <image> [ori_model]")
         print("\n示例:")
         print("  python example.py ../../models/det.mnn ../../models/rec.mnn "
               "../../models/keys.txt ../../res/1.png")
+        print("  python example.py ../../models/det.mnn ../../models/rec.mnn "
+              "../../models/keys.txt ../../res/1.png ../../models/doc_ori.mnn")
         sys.exit(1)
     
     det_path = sys.argv[1]
     rec_path = sys.argv[2]
     charset_path = sys.argv[3]
     image_path = sys.argv[4]
+    ori_path = sys.argv[5] if len(sys.argv) >= 6 else None
     
     # 检查文件是否存在
-    for path, name in [
+    required_files = [
         (det_path, "检测模型"),
         (rec_path, "识别模型"),
         (charset_path, "字符集"),
         (image_path, "图片"),
-    ]:
+    ]
+    if ori_path:
+        required_files.append((ori_path, "方向模型"))
+    
+    for path, name in required_files:
         if not Path(path).exists():
             print(f"错误: {name}文件不存在: {path}")
             sys.exit(1)
@@ -216,14 +254,14 @@ def main():
         example_with_config(det_path, rec_path, charset_path, image_path)
         example_fast_mode(det_path, rec_path, charset_path, image_path)
         
-        # 批量处理
-        if len(sys.argv) > 5:
-            image_paths = sys.argv[4:]
-            example_batch_processing(det_path, rec_path, charset_path, image_paths)
-        
         # 可选示例（需要额外库）
         example_with_pil(det_path, rec_path, charset_path, image_path)
         example_with_opencv(det_path, rec_path, charset_path, image_path)
+        
+        # 方向矫正示例 (需要方向模型)
+        if ori_path:
+            example_orientation(ori_path, image_path)
+            example_with_orientation(det_path, rec_path, charset_path, ori_path, image_path)
         
     except Exception as e:
         print(f"\n错误: {e}")

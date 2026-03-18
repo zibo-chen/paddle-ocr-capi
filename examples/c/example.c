@@ -184,6 +184,75 @@ void example_batch_processing(const char *det_path, const char *rec_path,
     ocr_engine_destroy(engine);
 }
 
+/**
+ * 示例 6: 方向分类 (单独使用方向模型)
+ */
+void example_orientation_only(const char *ori_path, const char *image_path)
+{
+    printf("\n=== 示例 6: 方向分类 ===\n");
+
+    OriModelHandle *ori = ocr_ori_model_create(ori_path, NULL);
+    if (!ori)
+    {
+        print_error();
+        return;
+    }
+
+    OriResult result = ocr_ori_model_classify_file(ori, image_path);
+
+    if (result.angle >= 0)
+    {
+        printf("图片方向: %d°\n", result.angle);
+        printf("置信度: %.2f%%\n", result.confidence * 100);
+        printf("类别索引: %zu\n", result.class_idx);
+    }
+    else
+    {
+        printf("方向分类失败\n");
+        print_error();
+    }
+
+    ocr_ori_model_destroy(ori);
+}
+
+/**
+ * 示例 7: 带旋转矫正的 OCR (推荐用于可能旋转的图片)
+ */
+void example_with_orientation(const char *det_path, const char *rec_path,
+                              const char *charset_path, const char *ori_path,
+                              const char *image_path)
+{
+    printf("\n=== 示例 7: 带旋转矫正的 OCR ===\n");
+
+    // 创建带方向矫正的引擎
+    OcrEngineHandle *engine = ocr_engine_create_with_ori(
+        det_path, rec_path, charset_path, ori_path, NULL);
+
+    if (!engine)
+    {
+        print_error();
+        return;
+    }
+
+    // 即使图片是旋转的，也能正确识别
+    OcrResultList result = ocr_engine_recognize_file(engine, image_path);
+
+    printf("识别结果数量: %zu\n", result.count);
+    for (size_t i = 0; i < result.count; i++)
+    {
+        printf("[%zu] 文本: %s\n", i + 1, result.items[i].text);
+        printf("    置信度: %.2f%%\n", result.items[i].confidence * 100);
+        printf("    位置: (%d, %d, %u, %u)\n",
+               result.items[i].bbox.x,
+               result.items[i].bbox.y,
+               result.items[i].bbox.width,
+               result.items[i].bbox.height);
+    }
+
+    ocr_result_list_free(&result);
+    ocr_engine_destroy(engine);
+}
+
 int main(int argc, char *argv[])
 {
     printf("OCR C API 示例\n");
@@ -191,9 +260,10 @@ int main(int argc, char *argv[])
 
     if (argc < 5)
     {
-        printf("\n用法: %s <det_model> <rec_model> <charset> <image>\n", argv[0]);
+        printf("\n用法: %s <det_model> <rec_model> <charset> <image> [ori_model]\n", argv[0]);
         printf("\n示例:\n");
         printf("  %s models/det.mnn models/rec.mnn models/keys.txt test.jpg\n", argv[0]);
+        printf("  %s models/det.mnn models/rec.mnn models/keys.txt test.jpg models/doc_ori.mnn\n", argv[0]);
         return 1;
     }
 
@@ -202,17 +272,18 @@ int main(int argc, char *argv[])
     const char *charset_path = argv[3];
     const char *image_path = argv[4];
 
-    // 运行各种示例
+    // 运行基础示例
     example_simple_api(det_path, rec_path, charset_path, image_path);
     example_with_config(det_path, rec_path, charset_path, image_path);
     example_detection_only(det_path, image_path);
     example_recognition_only(rec_path, charset_path);
 
-    // 批量处理示例
-    if (argc > 5)
+    // 方向矫正示例 (需要第 5 个参数: 方向模型路径)
+    if (argc >= 6)
     {
-        const char **images = (const char **)&argv[4];
-        example_batch_processing(det_path, rec_path, charset_path, images, argc - 4);
+        const char *ori_path = argv[5];
+        example_orientation_only(ori_path, image_path);
+        example_with_orientation(det_path, rec_path, charset_path, ori_path, image_path);
     }
 
     return 0;
